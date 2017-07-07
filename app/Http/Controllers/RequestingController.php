@@ -1,0 +1,219 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Message;
+use App\Product;
+use App\ReqToBuyer;
+use App\ReqToSupplier;
+use App\User;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+
+use App\Category;
+use App\Http\Requests;
+use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\Auth;
+use Intervention\Image\Facades\Image;
+
+class RequestingController extends Controller
+{
+
+
+    public function getBuyerToSupplier($id)
+    {
+        if (\Auth::check()) {
+            if (\Auth::user()->role == 'admin') {
+                return redirect()->back();
+            }
+        }
+        $supplier_id = $id;
+        $categories = Category::orderBy('name')->get();
+
+        return view('publicview.sendinquiry', compact('supplier_id', 'categories'));
+    }
+
+    public function postBuyerToSupplier($supplier_id)
+    {
+        $input = \Request::all();
+
+        $input['approved'] = 0;
+
+        if (\Auth::check()) {
+            $this->saveData($supplier_id, $input, \Auth::user()->getAttributeValue('id'));
+            return redirect()->back()->with('success', 'Message Sent Successfully');
+        } else if ($input['member'] == 'M') {
+            if (\Auth::attempt(['email' => $input['email'], 'password' => $input['login_password'], 'approved' => 1])) {
+                if (\Auth::user()->role == 'admin') {
+                    return redirect()->back()->with('error', 'Admin cannot send inquiry');
+                }
+                $this->saveData($supplier_id, $input, \Auth::user()->getAttributeValue('id'));
+                return redirect()->back()->with('success', 'Message Sent Successfully');
+            } else {
+                return redirect()->back();
+            }
+        } else if ($input['member'] == 'NM') {
+            try {
+                $user_id = $this->reg_user($input);
+                $this->saveData($supplier_id, $input, $user_id);
+                return redirect('auth/login');
+            } catch (\Exception $e) {
+                return redirect()->back();
+            }
+        }
+    }
+
+
+    private function get_images($input)
+    {
+        $images = [];
+
+        if (!is_null($input['images'][0])) {
+            foreach ($input['images'] as $image_file) {
+                $path = 'images/products/'; //relative path, not absolute
+                $image_name = time() . $image_file->getClientOriginalName();
+                $image_path = $path . $image_name;
+                Image::make($image_file)->resize(300, 200)->save($image_path);
+                array_push($images, $image_path);
+            }
+        } else {
+            array_push($images, "images/common-placeholder.jpg");
+        }
+        return json_encode($images);
+    }
+
+    /**
+     * @param $product_id
+     * @param $input
+     * @return string
+     */
+    private function saveData($supplier_id, $input, $user)
+    {
+        ReqToSupplier::unguard();
+
+        $data = ReqToSupplier::create([
+            'supplier' => $supplier_id,
+            'buyer' => $user,
+            'subject' => $input['subject'],
+            'message' => $input['message'],
+            'response_required_time' => date('Y-m-d', strtotime('+' . $input['response_required_time'] . ' days')),
+            'images' => $this->get_images($input),
+            'approved' => $input['approved'],
+            'additional' => isset($input['additional']) ? json_encode($input['additional']) : ""
+        ]);
+
+        ReqToSupplier::reguard();
+
+        Message::unguard();
+        Message::create([
+            'from' => $data->buyer,
+            'to' => $data->supplier,
+            'req_id' => $data->id,
+            'approved' => 0,
+            'type' => 'reqtosupplier',
+            'new' => 0
+        ]);
+        Message::reguard();
+    }
+
+    /**
+     * @param $input
+     */
+    private function reg_user($input)
+    {
+        $input['password'] = bcrypt($input['reg_password']);
+        User::unguard();
+        $user_id = User::insertGetId([
+            "email" => $input['email'],
+            "password" => $input['password'],
+            "role" => $input['type'],
+            "company_name" => $input['company_name'],
+            "category" => $input['category'],
+            "contact_person" => $input['contact_person'],
+            "business_phone" => $input['business_phone'],
+            "subscribe" => $input['subscribe'],
+            "approved" => 0
+        ]);
+
+        User::reguard();
+
+        return $user_id;
+    }
+
+
+    public function getSupplierToBuyer($buyer_id, $product_id)
+    {
+        if (\Auth::check()) {
+            if (\Auth::user()->role == 'admin') {
+                return redirect()->back();
+            }
+        }
+        $categories = Category::orderBy('name')->get();
+        return view('publicview.buyer-contact', compact('buyer_id', 'product_id', 'categories'));
+    }
+
+    public function postSupplierToBuyer($buyer)
+    {
+        $input = \Request::all();
+
+        if (\Auth::check()) {
+            $this->saveReqToBuyerData($buyer, $input, \Auth::user()->id);
+            return redirect('/')->with('success', 'Message Sent Successfully');
+        } else if ($input['member'] == 'M') {
+            if (\Auth::attempt(['email' => $input['email'], 'password' => $input['login_password'], 'approved' => 1])) {
+                if (\Auth::user()->role == 'admin') {
+                    return redirect('/')->with('success', 'Admin cannot send enquiry');
+                }
+                $this->saveReqToBuyerData($buyer, $input, \Auth::user()->id);
+                return redirect('/')->with('success', 'Message Sent Successfully');
+            } else {
+                return redirect()->back();
+            }
+        } else if ($input['member'] == 'NM') {
+            try {
+                $user_id = $this->reg_user($input);
+                $this->saveReqToBuyerData($buyer, $input, $user_id);
+                return redirect('auth/login');
+            } catch (\Exception $e) {
+                return redirect()->back();
+            }
+        }
+
+        return redirect('/')->with('success', 'Message Sent Successfully');
+    }
+
+    /**
+     * @param $buyer
+     * @param $input
+     * @param $user
+     */
+    private function saveReqToBuyerData($buyer, $input, $user)
+    {
+        ReqToBuyer::unguard();
+
+        $data = ReqToBuyer::create([
+            'supplier' => $user,
+            'buyer' => $buyer,
+            'message' => $input['message'],
+            'supply_ability' => $input['supply_ability'],
+            'images' => $this->get_images($input),
+            'approved' => 0,
+            'additional' => isset($input['additional']) ? json_encode($input['additional']) : ""
+
+        ]);
+        ReqToBuyer::reguard();
+
+        Message::unguard();
+        Message::create([
+            'from' => $data->supplier,
+            'to' => $data->buyer,
+            'req_id' => $data->id,
+            'approved' => 0,
+            'type' => 'reqtobuyer',
+            'new' => 0
+        ]);
+        Message::reguard();
+    }
+
+
+}
